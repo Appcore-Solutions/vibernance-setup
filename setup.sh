@@ -39,8 +39,27 @@ done
 [[ "$IDENTITY" =~ ^cust-[a-z0-9-]+@[a-z0-9-]+\.iam\.gserviceaccount\.com$ ]] || fail "--identity must be your Vibernance identity from the onboarding page (cust-…@….iam.gserviceaccount.com)."
 [[ "$IDENTITY_ID" =~ ^[0-9]{10,30}$ ]] || fail "--identity-id must be the number shown next to your Vibernance identity."
 [[ "$PROJECT" =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]$ ]] || fail "--project or --create-project must be a Google Cloud project ID."
-command -v terraform >/dev/null || fail "terraform isn't installed. Cloud Shell has it; elsewhere, install Terraform or OpenTofu."
 command -v jq >/dev/null || fail "jq isn't installed (Cloud Shell has it)."
+command -v unzip >/dev/null || fail "unzip isn't installed (Cloud Shell has it)."
+
+# OpenTofu, pinned and checksum-verified, in your home directory. A "terraform" that only prints
+# install instructions (as Cloud Shell's does now) would otherwise look like success.
+TOFU_VERSION=1.13.9
+tofu_bin() {
+  local dir="$HOME/.vibernance/tofu-$TOFU_VERSION"
+  if [ ! -x "$dir/tofu" ]; then
+    say "Installing OpenTofu $TOFU_VERSION (open-source Terraform) in $dir"
+    local tmp; tmp="$(mktemp -d)"
+    local zip="tofu_${TOFU_VERSION}_linux_amd64.zip"
+    curl -sSfL -o "$tmp/$zip" "https://github.com/opentofu/opentofu/releases/download/v$TOFU_VERSION/$zip"
+    curl -sSfL -o "$tmp/SHA256SUMS" "https://github.com/opentofu/opentofu/releases/download/v$TOFU_VERSION/tofu_${TOFU_VERSION}_SHA256SUMS"
+    (cd "$tmp" && grep " $zip\$" SHA256SUMS | sha256sum -c --quiet -) || fail "the OpenTofu download didn't match its checksum."
+    mkdir -p "$dir" && unzip -q -o "$tmp/$zip" tofu -d "$dir" && rm -rf "$tmp"
+  fi
+  "$dir/tofu" version >/dev/null || fail "OpenTofu didn't run."
+  echo "$dir/tofu"
+}
+TOFU="$(tofu_bin)"
 
 ME="$(gcloud config get-value account 2>/dev/null)"
 [ -n "$ME" ] || fail "you're not signed in to gcloud."
@@ -86,7 +105,7 @@ if ! gcloud storage buckets describe "gs://$BUCKET" >/dev/null 2>&1; then
                       gcloud storage buckets update "gs://$BUCKET" --versioning --quiet; }
 fi
 
-TF=(terraform -chdir="$HERE/terraform")
+TF=("$TOFU" -chdir="$HERE/terraform")
 TFVARS=(-var "project_id=$PROJECT" -var "region=$REGION" -var "vibernance_service_account=$IDENTITY" -var "vibernance_customer_id=$APPCORE_CUSTOMER_ID")
 if [ "$DRY" = 0 ] || gcloud storage buckets describe "gs://$BUCKET" >/dev/null 2>&1; then
   "${TF[@]}" init -input=false -reconfigure -backend-config="bucket=$BUCKET" -backend-config="prefix=vibernance" >/dev/null
@@ -139,6 +158,7 @@ say "Setting up $PROJECT for Vibernance (about 4 minutes)"
 if [ "$DRY" = 1 ]; then "${TF[@]}" plan -input=false "${TFVARS[@]}"; exit 0; fi
 "${TF[@]}" apply -input=false -auto-approve "${TFVARS[@]}"
 RUNTIME="$("${TF[@]}" output -raw runtime_service_account)"
+[[ "$RUNTIME" == vibernance-apps@"$PROJECT".iam.gserviceaccount.com ]] || fail "the setup didn't finish (no apps identity in $PROJECT). Scroll up for the first error, fix it, and run the same command again."
 
 if [ "$SKIP_DIR" = 0 ]; then
   say "Connecting the owner-left check: a read-only directory role for your Vibernance identity"
