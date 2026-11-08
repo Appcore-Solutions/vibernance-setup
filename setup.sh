@@ -52,11 +52,21 @@ if [ -n "$CREATE" ] && ! gcloud projects describe "$PROJECT" >/dev/null 2>&1; th
   [ -n "$BILLING" ] || fail "--create-project needs --billing-account (find yours with: gcloud billing accounts list)."
   ORG="$(gcloud organizations list --format='value(name)' --limit=1)"
   [ -n "$ORG" ] || fail "you can't see an organization. Sign in as an admin of your organization."
-  say "Creating project $PROJECT in organization $ORG"
-  if [ "$DRY" = 0 ]; then
-    gcloud projects create "$PROJECT" --organization="$ORG" --name="Vibernance apps" --quiet
-    gcloud billing projects link "$PROJECT" --billing-account="$BILLING" --quiet
+  if [ "$DRY" = 1 ]; then
+    say "Dry run. A real run would:"
+    echo "  1. Create project $PROJECT in organization $ORG and link billing account $BILLING"
+    echo "  2. Create gs://${PROJECT}-vibernance-setup for the setup's record"
+    echo "  3. Allow Appcore's customer ID ($APPCORE_CUSTOMER_ID) in domain-restricted sharing on $PROJECT only"
+    echo "  4. Turn on Cloud Run, IAP, Artifact Registry and Secret Manager, and create the apps identity and image registry"
+    echo "  5. Give $IDENTITY its roles in $PROJECT (see README.md)"
+    [ "$SKIP_DIR" = 1 ] || echo "  6. Create the read-only directory role \"$ROLE_NAME\" and assign it to $IDENTITY"
+    echo
+    echo "The detailed plan needs the project to exist. Run without --dry-run to create it; you can re-run --dry-run then."
+    exit 0
   fi
+  say "Creating project $PROJECT in organization $ORG"
+  gcloud projects create "$PROJECT" --organization="$ORG" --name="Vibernance apps" --quiet
+  gcloud billing projects link "$PROJECT" --billing-account="$BILLING" --quiet
 fi
 gcloud projects describe "$PROJECT" >/dev/null 2>&1 || fail "can't read project $PROJECT. Check the ID and that you're an owner."
 NUMBER="$(gcloud projects describe "$PROJECT" --format='value(projectNumber)')"
