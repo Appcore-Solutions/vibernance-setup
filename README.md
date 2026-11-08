@@ -5,7 +5,7 @@ Connects your Google Cloud to [Vibernance](https://vibernance.com), so Vibernanc
 [![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/Appcore-Solutions/vibernance-setup&cloudshell_tutorial=README.md)
 
 ## What it changes
-Everything happens in **one apps project** you choose or create. Nothing else in your organization is touched, except the directory role in the last row.
+Everything the script does happens in **one apps project** you choose or create. The optional directory role in the last row is a step you do yourself in the Admin console.
 
 | What | Why |
 | --- | --- |
@@ -15,7 +15,7 @@ Everything happens in **one apps project** you choose or create. Nothing else in
 | **Your Vibernance identity** (`cust-…@vibernance-control-plane-dev.iam.gserviceaccount.com`) gets, in this project only: Cloud Run admin, IAP admin, act as the apps identity, push to the registry, write (not read) its own secrets, read Cloud Run metrics, read Cloud Run request logs through one log view | Deploy apps behind sign-in, check they're healthy and used, write secrets you enter without being able to read them back |
 | A domain-restricted-sharing exception **on this project only**, allowing Appcore's Google customer ID (`C026oloip`) | New organizations only allow their own accounts in IAM |
 | A storage bucket `<project>-vibernance-setup` | This setup's record, so you can re-run or remove it |
-| **Directory:** an admin role "Vibernance directory read" with only *Admin API › Users › Read*, assigned to your Vibernance identity (skip with `--skip-directory`) | Vibernance sees only whether each person is active, to hand an app to its sponsor when its owner leaves |
+| **Directory (a 2-minute step in the Admin console; the script shows you how):** an admin role "Vibernance directory read" with only *Admin API › Users › Read*, assigned to your Vibernance identity. Optional | Vibernance sees only whether each person is active, to hand an app to its sponsor when its owner leaves |
 
 It creates no keys and grants nothing outside the apps project. Vibernance can't read your apps' data, secrets or other projects.
 
@@ -35,4 +35,4 @@ You need: Organization Policy Administrator on your organization (for the except
 ```bash
 ./setup.sh --project yourorg-vibernance-apps --identity cust-… --identity-id 1234567890 --remove
 ```
-Removes every grant to your Vibernance identity, the log view, the domain-policy exception and the directory role. Your apps, images, logs and the apps project stay. Then tell Appcore, so your organization is closed on their side.
+Removes every grant to your Vibernance identity, the log view and the domain-policy exception. If you added the directory role, delete it in the Admin console (Admin roles › Vibernance directory read › Delete role). Your apps, images, logs and the apps project stay. Then tell Appcore, so your organization is closed on their side.

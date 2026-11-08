@@ -7,7 +7,7 @@
 #   ./setup.sh --identity <email> --identity-id <number> --project <id>      use an existing project
 #   ./setup.sh --identity <email> --identity-id <number> --create-project <id> --billing-account <id>
 #   ./setup.sh ... --dry-run             show what would change, change nothing
-#   ./setup.sh ... --skip-directory      don't connect the owner-left check
+#   ./setup.sh ... --skip-directory      don't show the owner-left check's Admin console step
 #   ./setup.sh --project <id> --identity <email> --identity-id <number> --remove
 #                                        take away Vibernance's access; your apps keep running
 set -euo pipefail
@@ -78,7 +78,7 @@ if [ -n "$CREATE" ] && ! gcloud projects describe "$PROJECT" >/dev/null 2>&1; th
     echo "  3. Allow Appcore's customer ID ($APPCORE_CUSTOMER_ID) in domain-restricted sharing on $PROJECT only"
     echo "  4. Turn on Cloud Run, IAP, Artifact Registry and Secret Manager, and create the apps identity and image registry"
     echo "  5. Give $IDENTITY its roles in $PROJECT (see README.md)"
-    [ "$SKIP_DIR" = 1 ] || echo "  6. Create the read-only directory role \"$ROLE_NAME\" and assign it to $IDENTITY"
+    [ "$SKIP_DIR" = 1 ] || echo "  6. Show you the 2-minute Admin console step for the owner-left check"
     echo
     echo "The detailed plan needs the project to exist. Run without --dry-run to create it; you can re-run --dry-run then."
     exit 0
@@ -112,18 +112,21 @@ if [ "$DRY" = 0 ] || gcloud storage buckets describe "gs://$BUCKET" >/dev/null 2
 fi
 
 # --- Directory role (owner-left check) --------------------------------------------------------
-ADMIN_API=https://admin.googleapis.com/admin/directory/v1/customer/my_customer
-admin_token() {
-  # The Admin SDK needs its own scopes on your sign-in; Google asks you to approve them once.
-  if ! gcloud auth application-default print-access-token >/dev/null 2>&1 \
-     || ! curl -sf -H "Authorization: Bearer $(gcloud auth application-default print-access-token)" "$ADMIN_API/roles?maxResults=1" >/dev/null; then
-    say "Google will ask you to sign in once more, to manage admin roles in your directory"
-    gcloud auth application-default login --quiet \
-      --scopes=https://www.googleapis.com/auth/cloud-platform,https://www.googleapis.com/auth/admin.directory.rolemanagement
-  fi
-  gcloud auth application-default print-access-token
+# Google doesn't let a script manage admin roles through gcloud's sign-in, so this one step is
+# done in the Admin console. Vibernance's Connection page shows whether it's in place.
+directory_steps() {
+  say "Last step, in the Google Admin console (about 2 minutes): the owner-left check"
+  cat <<EOF
+  This lets Vibernance see only whether each person is active, so it can hand an app to its
+  sponsor when its owner leaves. Skip it if you'd rather mark people as left in Vibernance.
+
+  1. Open https://admin.google.com/ac/roles and choose Create new role.
+  2. Name: $ROLE_NAME
+  3. Under "Admin API privileges", tick Users > Read. Nothing else. Create the role.
+  4. On the new role, choose Assign service accounts and enter:
+       $IDENTITY
+EOF
 }
-api() { curl -sS -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' "$@"; }
 
 if [ "$REMOVE" = 1 ]; then
   say "Removing Vibernance's access to $PROJECT. Your apps, images and logs stay."
@@ -136,18 +139,8 @@ if [ "$REMOVE" = 1 ]; then
   TARGETS+=(-target=google_org_policy_policy.allow_vibernance)
   if [ "$DRY" = 1 ]; then "${TF[@]}" plan -destroy -input=false "${TFVARS[@]}" "${TARGETS[@]}"
   else "${TF[@]}" destroy -input=false -auto-approve "${TFVARS[@]}" "${TARGETS[@]}"; fi
-  if [ "$SKIP_DIR" = 0 ]; then
-    TOKEN="$(admin_token)"
-    ROLE_ID="$(api "$ADMIN_API/roles" | jq -r --arg n "$ROLE_NAME" '.items[]? | select(.roleName==$n) | .roleId')"
-    if [ -n "$ROLE_ID" ]; then
-      for a in $(api "$ADMIN_API/roleassignments?roleId=$ROLE_ID" | jq -r '.items[]?.roleAssignmentId'); do
-        say "Removing the directory role from your Vibernance identity"
-        [ "$DRY" = 1 ] || api -X DELETE "$ADMIN_API/roleassignments/$a" >/dev/null
-      done
-      [ "$DRY" = 1 ] || api -X DELETE "$ADMIN_API/roles/$ROLE_ID" >/dev/null
-    fi
-  fi
   say "Done. Vibernance can no longer deploy to, read or check anything in $PROJECT."
+  echo "If you set up the owner-left check, remove it too: https://admin.google.com/ac/roles > $ROLE_NAME > Delete role."
   echo "Left in place: the apps project, its apps, images, the apps' runtime identity, and gs://$BUCKET (the setup's record)."
   echo "Tell Appcore you've disconnected, so your organization is closed on their side too."
   exit 0
@@ -160,26 +153,11 @@ if [ "$DRY" = 1 ]; then "${TF[@]}" plan -input=false "${TFVARS[@]}"; exit 0; fi
 RUNTIME="$("${TF[@]}" output -raw runtime_service_account)"
 [[ "$RUNTIME" == vibernance-apps@"$PROJECT".iam.gserviceaccount.com ]] || fail "the setup didn't finish (no apps identity in $PROJECT). Scroll up for the first error, fix it, and run the same command again."
 
-if [ "$SKIP_DIR" = 0 ]; then
-  say "Connecting the owner-left check: a read-only directory role for your Vibernance identity"
-  TOKEN="$(admin_token)"
-  ROLE_ID="$(api "$ADMIN_API/roles" | jq -r --arg n "$ROLE_NAME" '.items[]? | select(.roleName==$n) | .roleId')"
-  if [ -z "$ROLE_ID" ]; then
-    # The "Users › Read" privilege of the Admin API, found by name rather than a fixed ID.
-    PRIV="$(api "$ADMIN_API/roles/ALL/privileges" | jq -c '[.items[] | .. | objects | select(.privilegeName? == "USERS_RETRIEVE")][0] | {privilegeName, serviceId}')"
-    [ "$PRIV" != "null" ] || fail "couldn't find the Users › Read privilege in your directory."
-    ROLE_ID="$(api -X POST "$ADMIN_API/roles" -d "{\"roleName\":\"$ROLE_NAME\",\"roleDescription\":\"Lets Vibernance see whether people are active (owner-left check). Read-only.\",\"rolePrivileges\":[$PRIV]}" | jq -r '.roleId')"
-    [ -n "$ROLE_ID" ] && [ "$ROLE_ID" != null ] || fail "couldn't create the directory role."
-  fi
-  if ! api "$ADMIN_API/roleassignments?roleId=$ROLE_ID" | jq -e --arg id "$IDENTITY_ID" '.items[]? | select(.assignedTo==$id)' >/dev/null; then
-    api -X POST "$ADMIN_API/roleassignments" -d "{\"roleId\":\"$ROLE_ID\",\"assignedTo\":\"$IDENTITY_ID\",\"scopeType\":\"CUSTOMER\"}" | jq -e '.roleAssignmentId' >/dev/null \
-      || fail "couldn't assign the directory role. You can do it by hand: Admin console › Account › Admin roles › $ROLE_NAME › Assign service accounts › $IDENTITY"
-  fi
-fi
-
 CODE="$(jq -cn --arg p "$PROJECT" --arg n "$NUMBER" --arg r "$REGION" --arg rt "$RUNTIME" --arg c "$CUSTOMER_ID" --arg d "$DOMAIN" --arg i "$IDENTITY" \
   '{v:1, projectId:$p, projectNumber:$n, region:$r, runtimeServiceAccount:$rt, customerId:$c, domain:$d, identity:$i}' | base64 -w0)"
 say "Done. Paste this connection code into the Vibernance onboarding page:"
 echo "$CODE"
+echo
+[ "$SKIP_DIR" = 1 ] || directory_steps
 echo
 echo "To take Vibernance's access away later: ./setup.sh --project $PROJECT --identity $IDENTITY --identity-id $IDENTITY_ID --remove"
