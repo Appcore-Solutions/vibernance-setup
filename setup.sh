@@ -105,6 +105,13 @@ if ! gcloud storage buckets describe "gs://$BUCKET" >/dev/null 2>&1; then
                       gcloud storage buckets update "gs://$BUCKET" --versioning --quiet; }
 fi
 
+# Terraform bills its calls to this project, so the APIs it needs for that must be on first.
+if [ "$DRY" = 0 ]; then
+  say "Turning on the APIs the setup itself needs"
+  gcloud services enable cloudresourcemanager.googleapis.com serviceusage.googleapis.com orgpolicy.googleapis.com \
+    iam.googleapis.com logging.googleapis.com storage.googleapis.com --project "$PROJECT" --quiet
+fi
+
 TF=("$TOFU" -chdir="$HERE/terraform")
 TFVARS=(-var "project_id=$PROJECT" -var "region=$REGION" -var "vibernance_service_account=$IDENTITY" -var "vibernance_customer_id=$APPCORE_CUSTOMER_ID")
 if [ "$DRY" = 0 ] || gcloud storage buckets describe "gs://$BUCKET" >/dev/null 2>&1; then
