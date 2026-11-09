@@ -4,7 +4,9 @@
 # Vibernance identity the roles it needs there, plus read-only access to whether people in your
 # directory are active. It never creates keys. Read README.md for exactly what it changes.
 #
-#   ./setup.sh --identity <email> --identity-id <number> --project <id>      use an existing project
+#   ./setup.sh --code <setup code> --project <id>      the usual way: the code from the Vibernance setup page
+#   ./setup.sh --code <setup code> --create-project <id> --billing-account <id>
+#   ./setup.sh --identity <email> --identity-id <number> --project <id>      without a code (Appcore-assisted)
 #   ./setup.sh --identity <email> --identity-id <number> --create-project <id> --billing-account <id>
 #   ./setup.sh ... --dry-run             show what would change, change nothing
 #   ./setup.sh ... --skip-directory      don't show the owner-left check's Admin console step
@@ -13,16 +15,18 @@
 set -euo pipefail
 
 REGION=us-central1
-IDENTITY="" IDENTITY_ID="" PROJECT="" CREATE="" BILLING="" DRY=0 REMOVE=0 SKIP_DIR=0
+CODE="" IDENTITY="" IDENTITY_ID="" PROJECT="" CREATE="" BILLING="" DRY=0 REMOVE=0 SKIP_DIR=0
 APPCORE_CUSTOMER_ID=C026oloip
 ROLE_NAME="Vibernance directory read"
 HERE="$(cd "$(dirname "$0")" && pwd)"
+VIBERNANCE_URL="${VIBERNANCE_URL:-https://onboarding-472ucvvkyq-uc.a.run.app}"
 
 say()  { printf '\n\033[1m%s\033[0m\n' "$*" >&2; }  # stderr, so functions can return values on stdout
 fail() { printf '\n\033[31mStopped: %s\033[0m\n' "$*" >&2; exit 1; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
+    --code) CODE="$2"; shift 2 ;;
     --identity) IDENTITY="$2"; shift 2 ;;
     --identity-id) IDENTITY_ID="$2"; shift 2 ;;
     --project) PROJECT="$2"; shift 2 ;;
@@ -35,6 +39,14 @@ while [ $# -gt 0 ]; do
     *) fail "unknown option $1 (see the top of this file)" ;;
   esac
 done
+
+# With a setup code, Vibernance supplies the identity and Appcore's customer ID.
+if [ -n "$CODE" ]; then
+  INFO="$(curl -sS -f "$VIBERNANCE_URL/api/onboard/setup/$CODE" 2>/dev/null)" \n    || fail "that setup code isn't valid. Codes work once, for 1 hour; get a new one on the Vibernance setup page."
+  IDENTITY="$(jq -r .identity <<<"$INFO")"; IDENTITY_ID="$(jq -r .identityId <<<"$INFO")"
+  APPCORE_CUSTOMER_ID="$(jq -r .appcoreCustomerId <<<"$INFO")"
+  say "Setting up Vibernance for $(jq -r .organization <<<"$INFO")"
+fi
 
 [[ "$IDENTITY" =~ ^cust-[a-z0-9-]+@[a-z0-9-]+\.iam\.gserviceaccount\.com$ ]] || fail "--identity must be your Vibernance identity from the onboarding page (cust-…@….iam.gserviceaccount.com)."
 [[ "$IDENTITY_ID" =~ ^[0-9]{10,30}$ ]] || fail "--identity-id must be the number shown next to your Vibernance identity."
@@ -138,6 +150,7 @@ fi
 # done in the Admin console. Vibernance's Connection page shows whether it's in place.
 directory_steps() {
   say "Last step, in the Google Admin console (about 2 minutes): the owner-left check"
+  echo "  A guide with screenshots: https://github.com/Appcore-Solutions/vibernance-setup/blob/main/docs/directory-role.md"
   cat <<EOF
   This lets Vibernance see only whether each person is active, so it can hand an app to its
   sponsor when its owner leaves. Skip it if you'd rather mark people as left in Vibernance.
@@ -175,11 +188,56 @@ if [ "$DRY" = 1 ]; then "${TF[@]}" plan -input=false "${TFVARS[@]}"; exit 0; fi
 RUNTIME="$("${TF[@]}" output -raw runtime_service_account)"
 [[ "$RUNTIME" == vibernance-apps@"$PROJECT".iam.gserviceaccount.com ]] || fail "the setup didn't finish (no apps identity in $PROJECT). Scroll up for the first error, fix it, and run the same command again."
 
-CODE="$(jq -cn --arg p "$PROJECT" --arg n "$NUMBER" --arg r "$REGION" --arg rt "$RUNTIME" --arg c "$CUSTOMER_ID" --arg d "$DOMAIN" --arg i "$IDENTITY" \
-  '{v:1, projectId:$p, projectNumber:$n, region:$r, runtimeServiceAccount:$rt, customerId:$c, domain:$d, identity:$i}' | base64 -w0)"
-say "Done. Paste this connection code into the Vibernance onboarding page:"
-echo "$CODE"
-echo
-[ "$SKIP_DIR" = 1 ] || directory_steps
+REPORT="$(jq -cn --arg p "$PROJECT" --arg n "$NUMBER" --arg r "$REGION" --arg rt "$RUNTIME" --arg c "$CUSTOMER_ID" \
+  '{projectId:$p, projectNumber:$n, region:$r, runtimeServiceAccount:$rt, customerId:$c}')"
+
+if [ -z "$CODE" ]; then
+  # Without a setup code (Appcore-assisted): print a connection code for Appcore.
+  say "Done. Send this connection code to Appcore:"
+  jq -c --arg d "$DOMAIN" --arg i "$IDENTITY" '. + {v:1, domain:$d, identity:$i}' <<<"$REPORT" | base64 -w0; echo
+  [ "$SKIP_DIR" = 1 ] || directory_steps
+else
+  # Tell Vibernance, with your own Google sign-in so it knows the report is really from you.
+  status() { curl -sS -f "$VIBERNANCE_URL/api/onboard/setup/$CODE/status" 2>/dev/null || echo '{}'; }
+  say "Telling Vibernance, which now checks it can reach $PROJECT"
+  ID_TOKEN="$(gcloud auth print-identity-token 2>/dev/null)" || fail "couldn't get your Google sign-in for the report. Run: gcloud auth login, then this command again."
+  RESP="$(curl -sS -w '\n%{http_code}' -X POST -H 'content-type: application/json' \
+    -d "$(jq -cn --argjson r "$REPORT" --arg t "$ID_TOKEN" '{report:$r, idToken:$t}')" "$VIBERNANCE_URL/api/onboard/setup/$CODE/report")"
+  [ "$(tail -n1 <<<"$RESP")" = 202 ] || fail "Vibernance didn't accept the report: $(head -n1 <<<"$RESP" | jq -r '.error // .' 2>/dev/null)"
+  STATE=""
+  for _ in $(seq 1 36); do
+    S="$(status)"; STATE="$(jq -r '.state // ""' <<<"$S")"
+    [ "$STATE" = connected ] || [ "$STATE" = failed ] && break
+    printf '.' >&2; sleep 5
+  done
+  echo >&2
+  case "$STATE" in
+    connected) say "✓ Connected. Your organization can now sign in to Vibernance: $(jq -r .consoleUrl <<<"$S")" ;;
+    failed) fail "Vibernance couldn't reach $PROJECT as your Vibernance identity. $(jq -r '.detail // ""' <<<"$S") Run the same command again; it picks up where it stopped." ;;
+    *) fail "Vibernance hasn't confirmed yet. Run the same command again in a minute; it picks up where it stopped." ;;
+  esac
+
+  if [ "$SKIP_DIR" = 0 ]; then
+    directory_steps
+    echo
+    read -r -p "Press Enter when you've done it, or type s to skip for now: " ans
+    if [[ ! "$ans" =~ ^[Ss] ]]; then
+      curl -sS -f -X POST "$VIBERNANCE_URL/api/onboard/setup/$CODE/check-directory" >/dev/null || fail "couldn't ask Vibernance to check. Check it later in Vibernance: Settings › Check directory now."
+      say "Vibernance is checking the directory role"
+      DIR=""
+      for _ in $(seq 1 24); do
+        S="$(status)"; DIR="$(jq -r '.directory // ""' <<<"$S")"
+        [ -n "$DIR" ] && break
+        printf '.' >&2; sleep 5
+      done
+      echo >&2
+      case "$DIR" in
+        ok) say "✓ The owner-left check is connected." ;;
+        no-access) echo "Not yet: $(jq -r '.detail // ""' <<<"$S")"; echo "A new role can take a few minutes. Check again later in Vibernance: Settings › Check directory now." ;;
+        *) echo "No answer yet. Check later in Vibernance: Settings › Check directory now." ;;
+      esac
+    fi
+  fi
+fi
 echo
 echo "To take Vibernance's access away later: ./setup.sh --project $PROJECT --identity $IDENTITY --identity-id $IDENTITY_ID --remove"
