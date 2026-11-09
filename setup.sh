@@ -18,7 +18,7 @@ APPCORE_CUSTOMER_ID=C026oloip
 ROLE_NAME="Vibernance directory read"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
-say()  { printf '\n\033[1m%s\033[0m\n' "$*"; }
+say()  { printf '\n\033[1m%s\033[0m\n' "$*" >&2; }  # stderr, so functions can return values on stdout
 fail() { printf '\n\033[31mStopped: %s\033[0m\n' "$*" >&2; exit 1; }
 
 while [ $# -gt 0 ]; do
