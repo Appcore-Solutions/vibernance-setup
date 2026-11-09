@@ -20,16 +20,17 @@ Everything the script does happens in **one apps project** you choose or create.
 It creates no keys and grants nothing outside the apps project. Vibernance can't read your apps' data, secrets or other projects.
 
 ## Run it
-In Cloud Shell, with the values from your Vibernance onboarding page:
+The easy way: on the Vibernance setup page, sign in, copy your setup code and choose **Open in Cloud Shell**. A guide opens beside the terminal and walks you through it. Or, in Cloud Shell:
 
 ```bash
-./setup.sh --identity cust-yourorg@vibernance-control-plane-dev.iam.gserviceaccount.com --identity-id 1234567890 \
-           --create-project yourorg-vibernance-apps --billing-account 000000-000000-000000
+./setup.sh
 ```
 
-Use `--project <id>` instead of `--create-project` for a project you already have. Add `--dry-run` first to see the plan without changing anything. It takes about 4 minutes and prints a connection code to paste back into Vibernance.
+It asks for your setup code, offers your projects and billing accounts to choose from, shows what will change, and asks before changing anything. It takes about 5 minutes and tells Vibernance itself when it's done.
 
-You need: Organization Policy Administrator on your organization (for the exception), Owner of the apps project (or Project Creator and a billing account), and super admin in your directory (for the directory role).
+For scripting: `./setup.sh --code <setup code> --project <id>` (or `--create-project <id> --billing-account <id>`), and `--dry-run` to see the plan first.
+
+You need: Organization Policy Administrator on your organization (the setup offers to grant it to you), Owner of the apps project (or Project Creator and a billing account), and super admin in your directory for the optional owner-left check ([guide](docs/directory-role.md)).
 
 ## Take Vibernance's access away
 ```bash

@@ -4,7 +4,8 @@
 # Vibernance identity the roles it needs there, plus read-only access to whether people in your
 # directory are active. It never creates keys. Read README.md for exactly what it changes.
 #
-#   ./setup.sh --code <setup code> --project <id>      the usual way: the code from the Vibernance setup page
+#   ./setup.sh                           the usual way: it asks for your setup code and offers choices
+#   ./setup.sh --code <setup code> --project <id>
 #   ./setup.sh --code <setup code> --create-project <id> --billing-account <id>
 #   ./setup.sh --identity <email> --identity-id <number> --project <id>      without a code (Appcore-assisted)
 #   ./setup.sh --identity <email> --identity-id <number> --create-project <id> --billing-account <id>
@@ -40,13 +41,70 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# --- Interactive mode: ./setup.sh with no options asks for everything ---------------------------
+INTERACTIVE=0
+if [ -z "$CODE" ] && [ -z "$IDENTITY" ] && [ "$REMOVE" = 0 ] && [ -t 0 ]; then
+  INTERACTIVE=1
+  say "Set up Vibernance"
+  echo "Paste the setup code from the Vibernance setup page (it looks like ABCD-EFGH-JKMN)."
+  read -r -p "Setup code: " CODE
+  [ -n "$CODE" ] || fail "no setup code. Get one at $VIBERNANCE_URL/setup"
+fi
+
 # With a setup code, Vibernance supplies the identity and Appcore's customer ID.
 if [ -n "$CODE" ]; then
   INFO="$(curl -sS -f "$VIBERNANCE_URL/api/onboard/setup/$CODE" 2>/dev/null)" \
     || fail "that setup code isn't valid. Codes work once, for 1 hour; get a new one on the Vibernance setup page."
   IDENTITY="$(jq -r .identity <<<"$INFO")"; IDENTITY_ID="$(jq -r .identityId <<<"$INFO")"
   APPCORE_CUSTOMER_ID="$(jq -r .appcoreCustomerId <<<"$INFO")"
-  say "Setting up Vibernance for $(jq -r .organization <<<"$INFO")"
+  ORG_NAME="$(jq -r .organization <<<"$INFO")"
+  say "Setting up Vibernance for $ORG_NAME"
+fi
+
+# Choose the project (and billing, for a new one) from lists, when it wasn't given.
+pick() {  # pick "<prompt>" item... → prints the chosen item
+  local prompt="$1"; shift
+  local i=1; for it in "$@"; do printf '  %d) %s\n' "$i" "$it" >&2; i=$((i+1)); done
+  local n; read -r -p "$prompt [1-$#]: " n
+  [[ "$n" =~ ^[0-9]+$ ]] && [ "$n" -ge 1 ] && [ "$n" -le $# ] || fail "choose a number from 1 to $#."
+  echo "${!n}"
+}
+if [ -z "$PROJECT" ] && [ "$REMOVE" = 0 ] && [ -t 0 ]; then
+  INTERACTIVE=1
+  ORG_LABEL="$(sed 's/\..*//' <<<"${ORG_NAME:-org}" | tr -cd 'a-z0-9-')"
+  SUGGESTED="${ORG_LABEL:0:16}-vibernance-apps"
+  mapfile -t EXISTING < <(gcloud projects list --format='value(projectId)' --sort-by=projectId --limit=20 2>/dev/null)
+  say "Which project should Vibernance deploy your apps into?"
+  echo "A new, empty project is best: Vibernance gets roles in that project only." >&2
+  CHOICE="$(pick "Project" "Create a new project: $SUGGESTED" "${EXISTING[@]}")"
+  if [[ "$CHOICE" == "Create a new project: "* ]]; then
+    CREATE="$SUGGESTED"; PROJECT="$SUGGESTED"
+    if gcloud projects describe "$PROJECT" >/dev/null 2>&1; then CREATE=""; echo "  $PROJECT already exists; using it." >&2; fi
+  else
+    PROJECT="$CHOICE"
+  fi
+  if [ -n "$CREATE" ] && [ -z "$BILLING" ]; then
+    mapfile -t ACCOUNTS < <(gcloud billing accounts list --filter=open=true --format='value(name.basename(),displayName)' 2>/dev/null | tr '\t' ' ')
+    [ "${#ACCOUNTS[@]}" -gt 0 ] || fail "you have no open billing account to pay for the new project. Create one at https://console.cloud.google.com/billing, then run this again."
+    if [ "${#ACCOUNTS[@]}" = 1 ]; then BILLING="${ACCOUNTS[0]%% *}"
+    else say "Which billing account pays for the new project?"; BILLING="$(pick "Billing account" "${ACCOUNTS[@]}")"; BILLING="${BILLING%% *}"; fi
+  fi
+fi
+
+if [ "$INTERACTIVE" = 1 ] && [ "$DRY" = 0 ]; then
+  say "Here's what will happen"
+  cat >&2 <<EOF
+  Organization:        ${ORG_NAME:-}
+  Apps project:        $PROJECT${CREATE:+ (new, billed to $BILLING)}
+  Vibernance identity: $IDENTITY
+
+  In $PROJECT only, the setup turns on Cloud Run, IAP, Artifact Registry and Secret Manager,
+  creates an apps identity and an image registry, allows Appcore's accounts there, and gives
+  your Vibernance identity the roles in README.md. No keys. Nothing outside this project.
+  It takes about 5 minutes.
+EOF
+  read -r -p "Continue? [y/N] " yes
+  [[ "$yes" =~ ^[Yy] ]] || { echo "Nothing was changed." >&2; exit 0; }
 fi
 
 [[ "$IDENTITY" =~ ^cust-[a-z0-9-]+@[a-z0-9-]+\.iam\.gserviceaccount\.com$ ]] || fail "--identity must be your Vibernance identity from the onboarding page (cust-…@….iam.gserviceaccount.com)."
