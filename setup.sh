@@ -95,6 +95,21 @@ CUSTOMER_ID="$(gcloud organizations describe "$ORG_ID" --format='value(owner.dir
 DOMAIN="$(gcloud organizations describe "$ORG_ID" --format='value(displayName)')"
 say "Project $PROJECT ($NUMBER) in $DOMAIN"
 
+# The domain-policy exception needs Organization Policy Administrator, which even super admins
+# don't have until someone grants it. Check now rather than fail halfway.
+if [ "$REMOVE" = 0 ] && [ "$DRY" = 0 ]; then
+  HAS_POLICY_ADMIN="$(gcloud organizations get-iam-policy "$ORG_ID" --format=json 2>/dev/null \
+    | jq -r --arg m "user:$ME" '[.bindings[]? | select(.role=="roles/orgpolicy.policyAdmin") | .members[]] | index($m) != null')"
+  if [ "$HAS_POLICY_ADMIN" != "true" ]; then
+    say "You need the Organization Policy Administrator role on $DOMAIN for one step: the domain-policy exception on $PROJECT."
+    read -r -p "Grant it to $ME now? [y/N] " yes
+    [[ "$yes" =~ ^[Yy] ]] || fail "run again once you have Organization Policy Administrator on your organization."
+    gcloud organizations add-iam-policy-binding "$ORG_ID" --member="user:$ME" --role=roles/orgpolicy.policyAdmin --condition=None --quiet >/dev/null
+    echo "Granted. Waiting a minute for it to take effect."
+    sleep 60
+  fi
+fi
+
 # --- Terraform state, kept in your project so you can re-run or remove later -------------------
 BUCKET="${PROJECT}-vibernance-setup"
 if ! gcloud storage buckets describe "gs://$BUCKET" >/dev/null 2>&1; then
