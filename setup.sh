@@ -42,7 +42,8 @@ done
 
 # With a setup code, Vibernance supplies the identity and Appcore's customer ID.
 if [ -n "$CODE" ]; then
-  INFO="$(curl -sS -f "$VIBERNANCE_URL/api/onboard/setup/$CODE" 2>/dev/null)" \n    || fail "that setup code isn't valid. Codes work once, for 1 hour; get a new one on the Vibernance setup page."
+  INFO="$(curl -sS -f "$VIBERNANCE_URL/api/onboard/setup/$CODE" 2>/dev/null)" \
+    || fail "that setup code isn't valid. Codes work once, for 1 hour; get a new one on the Vibernance setup page."
   IDENTITY="$(jq -r .identity <<<"$INFO")"; IDENTITY_ID="$(jq -r .identityId <<<"$INFO")"
   APPCORE_CUSTOMER_ID="$(jq -r .appcoreCustomerId <<<"$INFO")"
   say "Setting up Vibernance for $(jq -r .organization <<<"$INFO")"
