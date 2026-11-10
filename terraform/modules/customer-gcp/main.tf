@@ -8,6 +8,7 @@ terraform {
   required_providers {
     google      = { source = "hashicorp/google" }
     google-beta = { source = "hashicorp/google-beta" }
+    time        = { source = "hashicorp/time" }
   }
 }
 
@@ -37,6 +38,13 @@ resource "google_project_service" "this" {
   disable_on_destroy = false
 }
 
+# On a new project, Google can refuse calls to a just-enabled API for a minute or two
+# ("SERVICE_DISABLED", seen creating the image repository). Wait once; re-runs don't wait again.
+resource "time_sleep" "apis_ready" {
+  create_duration = "90s"
+  depends_on      = [google_project_service.this]
+}
+
 data "google_project" "this" {
   project_id = var.project_id
 }
@@ -46,7 +54,7 @@ resource "google_project_service_identity" "iap" {
   provider   = google-beta
   project    = var.project_id
   service    = "iap.googleapis.com"
-  depends_on = [google_project_service.this]
+  depends_on = [time_sleep.apis_ready]
 }
 
 # Identity the deployed apps run as. It has no roles; apps get only what they're given.
@@ -62,7 +70,7 @@ resource "google_artifact_registry_repository" "apps" {
   repository_id = "vibernance-apps"
   format        = "DOCKER"
   description   = "Images of apps that passed the Vibernance security gate"
-  depends_on    = [google_project_service.this]
+  depends_on    = [time_sleep.apis_ready]
 }
 
 # --- What Vibernance may do in this project ----------------------------------------
