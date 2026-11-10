@@ -243,6 +243,22 @@ fi
 # --- Setup ---------------------------------------------------------------------------------
 say "Setting up $PROJECT for Vibernance (about 4 minutes)"
 if [ "$DRY" = 1 ]; then "${TF[@]}" plan -input=false "${TFVARS[@]}"; exit 0; fi
+
+# A run that stops after Google creates something, but before the setup records it, would make
+# the next run fail with "already exists". Record (import) those first. Only the two things the
+# setup creates by name can do this; everything else is a grant or a switch, safe to repeat.
+adopt() { # <address> <import ID> <command that succeeds if it exists...>
+  local address="$1" id="$2"; shift 2
+  "${TF[@]}" state list 2>/dev/null | grep -qxF "$address" && return 0
+  "$@" >/dev/null 2>&1 || return 0
+  say "Found ${id##*/} from an earlier run; recording it so this run can carry on"
+  "${TF[@]}" import -input=false "${TFVARS[@]}" "$address" "$id" >/dev/null
+}
+adopt module.vibernance.google_artifact_registry_repository.apps "projects/$PROJECT/locations/$REGION/repositories/vibernance-apps" \
+  gcloud artifacts repositories describe vibernance-apps --location "$REGION" --project "$PROJECT"
+adopt module.vibernance.google_service_account.apps "projects/$PROJECT/serviceAccounts/vibernance-apps@$PROJECT.iam.gserviceaccount.com" \
+  gcloud iam service-accounts describe "vibernance-apps@$PROJECT.iam.gserviceaccount.com" --project "$PROJECT"
+
 "${TF[@]}" apply -input=false -auto-approve "${TFVARS[@]}"
 RUNTIME="$("${TF[@]}" output -raw runtime_service_account)"
 [[ "$RUNTIME" == vibernance-apps@"$PROJECT".iam.gserviceaccount.com ]] || fail "the setup didn't finish (no apps identity in $PROJECT). Scroll up for the first error, fix it, and run the same command again."
