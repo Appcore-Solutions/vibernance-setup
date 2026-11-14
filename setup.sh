@@ -230,9 +230,19 @@ if [ "$REMOVE" = 1 ]; then
            google_project_iam_member.secret_writer google_project_iam_member.read_requests google_logging_log_view.requests; do
     TARGETS+=(-target="module.vibernance.$r")
   done
-  TARGETS+=(-target=google_org_policy_policy.allow_vibernance)
-  if [ "$DRY" = 1 ]; then "${TF[@]}" plan -destroy -input=false "${TFVARS[@]}" "${TARGETS[@]}"
-  else "${TF[@]}" destroy -input=false -auto-approve "${TFVARS[@]}" "${TARGETS[@]}"; fi
+  # The domain-policy exception is dropped separately, by turning it off. Never add it to the
+  # destroy above: a targeted destroy also destroys everything that depends on its targets, and
+  # the whole module depends on the exception (it waits for it), so the image repository, the
+  # apps' runtime identity and their secret access would go too. A targeted apply follows only
+  # what its targets depend on, so the module is left alone.
+  POLICY=(-var allow_vibernance_in_domain_policy=false -target=google_org_policy_policy.allow_vibernance -target=time_sleep.policy_applies)
+  if [ "$DRY" = 1 ]; then
+    "${TF[@]}" plan -destroy -input=false "${TFVARS[@]}" "${TARGETS[@]}"
+    "${TF[@]}" plan -input=false "${TFVARS[@]}" "${POLICY[@]}"
+  else
+    "${TF[@]}" destroy -input=false -auto-approve "${TFVARS[@]}" "${TARGETS[@]}"
+    "${TF[@]}" apply -input=false -auto-approve "${TFVARS[@]}" "${POLICY[@]}"
+  fi
   say "Done. Vibernance can no longer deploy to, read or check anything in $PROJECT."
   echo "If you set up the owner-left check, remove it too: https://admin.google.com/ac/roles > $ROLE_NAME > Delete role."
   echo "Left in place: the apps project, its apps, images, the apps' runtime identity, and gs://$BUCKET (the setup's record)."
